@@ -34,17 +34,23 @@ elif curl --fail --silent --max-time 2 "$base_url/health" >/dev/null 2>&1; then
 fi
 
 echo "Starting qualified studio server"
-nohup "$project_dir/bin/start-waste-fast" >"$log_path" 2>&1 &
-new_pid=$!
-printf '%s\n' "$new_pid" >"$pid_path"
+: >"$pid_path"
+setsid -f "$project_dir/bin/start-waste-fast" </dev/null >"$log_path" 2>&1
 
 for _ in $(seq 1 600); do
     if curl --fail --silent --max-time 2 "$base_url/health" >/dev/null 2>&1; then
+        new_pid=$(tr -d '[:space:]' <"$pid_path")
+        [[ $new_pid =~ ^[0-9]+$ ]] || {
+            echo "server is healthy but its managed PID is missing" >&2
+            exit 1
+        }
         "$project_dir/bin/check-waste"
         echo "Studio WASTE server ready (supervisor PID $new_pid)"
         exit 0
     fi
-    if ! kill -0 "$new_pid" 2>/dev/null; then
+    new_pid=$(tr -d '[:space:]' <"$pid_path")
+    if [[ $new_pid =~ ^[0-9]+$ ]] &&
+            ! sudo -n kill -0 "$new_pid" 2>/dev/null; then
         echo "studio WASTE server exited during startup" >&2
         tail -50 "$log_path" >&2
         exit 1
