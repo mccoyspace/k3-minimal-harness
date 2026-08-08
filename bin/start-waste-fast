@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Spark-local WASTE server using the fastest held-out studio arm.
+set -euo pipefail
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+waste_repo=${WASTE_REPO:?set WASTE_REPO to the waste-spark checkout}
+model=${WASTE_MODEL:?set WASTE_MODEL to the K3 .waste container}
+usage_path=${K3_USAGE_PATH:-$project_dir/.k3/learning/studio-usage.waste}
+cpu_list=${WASTE_CPU_LIST:-5-9,15-19}
+budget=${WASTE_BUDGET_BYTES:-95172120576}
+prefix_cache=${WASTE_PREFIX_CACHE:-2G}
+prefix_entries=${WASTE_PREFIX_ENTRIES:-4}
+status_path=${WASTE_QOS_STATUS:-/var/lib/waste-qos/k3-minimal-fast-status.json}
+
+if [[ $(uname -s) != Linux ]]; then
+    echo "start-waste-fast must run on the Spark" >&2
+    exit 2
+fi
+for required in "$waste_repo/libwaste.so" "$waste_repo/tools/pm_qos_exec.py"; do
+    [[ -f $required ]] || { echo "missing $required" >&2; exit 2; }
+done
+sudo -n true || { echo "passwordless sudo is required for Q0" >&2; exit 2; }
+
+# Learn into a private, disposable candidate. Never overwrite the model's
+# shipped/default hotlist. The candidate is loaded on the next server start.
+mkdir -p "$(dirname -- "$usage_path")"
+if [[ ! -f $usage_path && -f $model/usage.waste ]]; then
+    cp -p "$model/usage.waste" "$usage_path"
+fi
+
+# Put the complete engine environment inside the dropped-privilege child
+# command. This does not depend on sudo's environment-preservation policy.
+engine_environment=(
+    WASTE_PROFILE=0
+    WASTE_Q8=1
+    WASTE_SDOT=0
+    WASTE_I8MM=0
+    WASTE_VERIFY=0
+    WASTE_BACKEND=auto
+    WASTE_DIRECT=1
+    WASTE_THREADS=10
+    WASTE_MLOCK=0
+    WASTE_PURGEABLE=0
+    WASTE_IO_THREADS=2
+    WASTE_IO_DEPTH=2
+    WASTE_LOOKAHEAD=6
+    WASTE_CUDA_KDA=1
+    WASTE_CUDA_DENSE=2
+    WASTE_CUDA_VQ=2
+    WASTE_CUDA_VQ_GROUP=1
+    WASTE_XPAR=0
+)
+
+echo "Starting K3 fast studio profile: CUDA, Q0, readers 2/depth 2, lookahead 6"
+echo "Q0 evidence: $status_path"
+exec sudo -n python3 "$waste_repo/tools/pm_qos_exec.py" \
+    --scope child \
+    --latency-us 0 \
+    --status "$status_path" \
+    --user "$(id -un)" -- \
+    env "${engine_environment[@]}" \
+    taskset -c "$cpu_list" \
+    python3 "$waste_repo/serve/__main__.py" "$model" \
+        --host 127.0.0.1 \
+        --port 8000 \
+        --threads 10 \
+        --cache lfru \
+        --usage "$usage_path" \
+        --learn-usage \
+        --budget "$budget" \
+        --prefix-cache "$prefix_cache" \
+        --prefix-cache-entries "$prefix_entries" \
+        --conversation-head \
+        --no-thinking

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_url=${WASTE_BASE_URL:-http://127.0.0.1:8000}
+
+echo "Health:"
+curl --fail --silent --show-error --max-time 5 "$base_url/health"
+echo
+echo "Models:"
+curl --fail --silent --show-error --max-time 5 "$base_url/v1/models"
+echo

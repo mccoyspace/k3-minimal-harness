@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.k3/
+experiments/**/.k3/
+.env
+.env.*
+!.env.example
+*.waste
+*.safetensors
+*.gguf
+*.log
