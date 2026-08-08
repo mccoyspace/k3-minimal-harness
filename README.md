@@ -82,6 +82,11 @@ In a second shell:
   "Inspect this project and identify the next useful step."
 ```
 
+`bin/check-waste` fails unless the live process matches the qualified profile,
+including the CUDA KDA/dense/VQ paths, loaded CUDA runtime, CPU affinity, Q0,
+lookahead, I/O configuration, and usage learning. Use
+`bin/restart-waste-fast` to safely replace a managed server with that profile.
+
 Use `--workspace /path/to/project` to work somewhere other than this checkout.
 Use a short, purpose-specific session name so warm conversations do not become
 an ever-growing context.

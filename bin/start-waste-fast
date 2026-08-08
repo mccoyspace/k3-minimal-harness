@@ -11,11 +11,13 @@ budget=${WASTE_BUDGET_BYTES:-95172120576}
 prefix_cache=${WASTE_PREFIX_CACHE:-2G}
 prefix_entries=${WASTE_PREFIX_ENTRIES:-4}
 status_path=${WASTE_QOS_STATUS:-/var/lib/waste-qos/k3-minimal-fast-status.json}
+pid_path=${K3_SERVER_PID:-/tmp/k3-minimal-fast-server.pid}
 
 if [[ $(uname -s) != Linux ]]; then
     echo "start-waste-fast must run on the Spark" >&2
     exit 2
 fi
+printf '%s\n' "$$" >"$pid_path"
 for required in "$waste_repo/libwaste.so" "$waste_repo/tools/pm_qos_exec.py"; do
     [[ -f $required ]] || { echo "missing $required" >&2; exit 2; }
 done

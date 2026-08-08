@@ -2,10 +2,76 @@
 set -euo pipefail
 
 base_url=${WASTE_BASE_URL:-http://127.0.0.1:8000}
+status_path=${WASTE_QOS_STATUS:-/var/lib/waste-qos/k3-minimal-fast-status.json}
+expected_affinity=${WASTE_CPU_LIST:-5-9,15-19}
 
 echo "Health:"
-curl --fail --silent --show-error --max-time 5 "$base_url/health"
+health=$(curl --fail --silent --show-error --max-time 5 "$base_url/health")
+printf '%s\n' "$health"
 echo
 echo "Models:"
 curl --fail --silent --show-error --max-time 5 "$base_url/v1/models"
 echo
+
+python3 -c '
+import json, sys
+h = json.loads(sys.argv[1])
+p = h["performance_profile"]
+e = p["engine"]
+s = p["storage"]
+l = h.get("usage_learning", {})
+checks = {
+    "threads=10": e.get("threads") == 10,
+    "cache=lfru": e.get("cache") == "lfru",
+    "direct_io": e.get("direct_io_effective") is True,
+    "readers=2": s.get("effective_read_ahead_threads") == 2,
+    "depth=2": s.get("effective_read_ahead_depth") == 2,
+    "lookahead=6": s.get("requested_router_lookahead") == 6,
+    "usage_learning": l.get("enabled") is True,
+}
+failed = [name for name, ok in checks.items() if not ok]
+if failed:
+    raise SystemExit("studio capability check failed: " + ", ".join(failed))
+print("Engine capability check: PASS (" + ", ".join(checks) + ")")
+' "$health"
+
+qos=$(sudo -n cat "$status_path")
+child_pid=$(python3 -c '
+import json, sys
+q = json.loads(sys.argv[1])
+if not (q.get("fd_active") and q.get("latency_us") == 0 and
+        q.get("scope") == "child"):
+    raise SystemExit("studio capability check failed: Q0 is not active")
+print(q["child_pid"])
+' "$qos"
+)
+
+live_environment=$(sudo -n tr '\0' '\n' <"/proc/$child_pid/environ")
+for expected in \
+    WASTE_Q8=1 \
+    WASTE_SDOT=0 \
+    WASTE_I8MM=0 \
+    WASTE_LOOKAHEAD=6 \
+    WASTE_CUDA_KDA=1 \
+    WASTE_CUDA_DENSE=2 \
+    WASTE_CUDA_VQ=2 \
+    WASTE_CUDA_VQ_GROUP=1 \
+    WASTE_XPAR=0; do
+    if ! grep -Fxq "$expected" <<<"$live_environment"; then
+        echo "studio capability check failed: missing $expected" >&2
+        exit 1
+    fi
+done
+
+if ! sudo -n grep -q '/libcudart\.so' "/proc/$child_pid/maps"; then
+    echo "studio capability check failed: CUDA runtime is not loaded" >&2
+    exit 1
+fi
+affinity=$(sudo -n awk '/^Cpus_allowed_list:/{print $2}' "/proc/$child_pid/status")
+if [[ $affinity != "$expected_affinity" ]]; then
+    echo "studio capability check failed: CPU affinity is $affinity" >&2
+    exit 1
+fi
+echo "Q0 capability check: PASS (child-scoped, latency_us=0)"
+echo "CUDA capability check: PASS (KDA, dense, VQ3R, grouped VQ)"
+echo "CPU affinity check: PASS ($affinity)"
