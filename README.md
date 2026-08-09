@@ -8,8 +8,9 @@ without squeezing it through JSON.
 
 This repository is the sanitized companion to the measured NVIDIA DGX Spark
 work in [waste-spark](https://github.com/mccoyspace/waste-spark). It contains no
-model weights, prompts, transcripts, outputs, machine-specific paths, or
-learned usage files.
+model weights, private prompts, transcripts, outputs, machine-specific paths,
+or learned usage files. The prompts under `jobs/studio-study/` are generic,
+editable examples.
 
 ## What it does
 
@@ -90,6 +91,36 @@ lookahead, I/O configuration, and usage learning. Use
 Use `--workspace /path/to/project` to work somewhere other than this checkout.
 Use a short, purpose-specific session name so warm conversations do not become
 an ever-growing context.
+
+## Studio jobs
+
+Reusable unattended jobs live in `jobs/`. Each job is an ordinary folder with
+`job.json`, `SYSTEM.md`, `STATE.md`, `BRIEF.md`, and Markdown stage prompts.
+Run data and outputs remain private under `.k3/jobs/`.
+
+The command-line surface and browser UI use the same validator and runner:
+
+```bash
+./bin/k3-job list
+./bin/k3-job validate studio-study
+./bin/k3-job start studio-study
+./bin/k3-job status studio-study
+./bin/k3-job stop
+
+./bin/start-k3-job-ui
+```
+
+The UI binds only to `127.0.0.1:8042`. From another computer, tunnel it rather
+than exposing it to the network:
+
+```bash
+ssh -N -L 8042:127.0.0.1:8042 your-spark-host
+```
+
+Then open `http://127.0.0.1:8042`. The browser may close after a run starts;
+the Spark runner continues independently. Runtime and temperature limits are
+enforced during model requests, not just between stages. Only one job runs at
+a time, and every cycle receives its own output directory.
 
 ## Private adaptive hotlist
 

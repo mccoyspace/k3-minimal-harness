@@ -1,0 +1,1 @@
+First use one ACT to read `01_ideas.md` and `02_critique.md`. Then reply with `SAVE 03_proposal.md` followed by one materially specific proposal: premise, visitor action, spatial sequence, essential mechanism, first physical test, scope cut, and unresolved question. Maximum 240 words.

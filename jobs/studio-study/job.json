@@ -1,0 +1,38 @@
+{
+  "schema": "k3.job.v1",
+  "name": "Studio Study",
+  "description": "A three-stage background ideation, critique, and synthesis run.",
+  "max_runtime_minutes": 180,
+  "max_cycles": 1,
+  "temperature_limit_c": 85,
+  "max_tokens": 448,
+  "max_rounds": 1,
+  "max_output_chars": 5000,
+  "request_timeout_seconds": 3600,
+  "command_timeout_seconds": 300,
+  "auto_approve": true,
+  "stop_on_failure": true,
+  "stages": [
+    {
+      "id": "ideas",
+      "title": "Generate directions",
+      "enabled": true,
+      "prompt": "prompts/01-ideas.md",
+      "deliverable": "01_ideas.md"
+    },
+    {
+      "id": "critique",
+      "title": "Critique the directions",
+      "enabled": true,
+      "prompt": "prompts/02-critique.md",
+      "deliverable": "02_critique.md"
+    },
+    {
+      "id": "synthesis",
+      "title": "Synthesize a proposal",
+      "enabled": true,
+      "prompt": "prompts/03-synthesis.md",
+      "deliverable": "03_proposal.md"
+    }
+  ]
+}

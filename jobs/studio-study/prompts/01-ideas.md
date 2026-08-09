@@ -1,0 +1,1 @@
+Reply with `SAVE 01_ideas.md` followed by three genuinely different project directions. For each, give a title, one-sentence visitor experience, physical mechanism, artistic claim, and largest risk. Maximum 220 words.

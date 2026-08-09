@@ -1,0 +1,1 @@
+First use one ACT to read `01_ideas.md`. Then reply with `SAVE 02_critique.md` followed by a skeptical comparison. Identify vagueness, cliché, feasibility problems, and spectacle without substance; rank the directions and state what evidence could reverse the ranking. Maximum 180 words.
