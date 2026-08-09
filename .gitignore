@@ -2,6 +2,7 @@ __pycache__/
 .DS_Store
 *.pyc
 .k3/
+jobs/*/outputs/
 experiments/**/.k3/
 .env
 .env.*

@@ -96,7 +96,11 @@ an ever-growing context.
 
 Reusable unattended jobs live in `jobs/`. Each job is an ordinary folder with
 `job.json`, `SYSTEM.md`, `STATE.md`, `BRIEF.md`, and Markdown stage prompts.
-Run data and outputs remain private under `.k3/jobs/`.
+Generated work is stored beside those instructions under
+`jobs/<job>/outputs/<run-id>/`. Each uniquely named output set includes an
+`inputs/` snapshot of the exact configuration and Markdown instructions used,
+plus one result directory per cycle. Operational status, events, transcripts,
+and logs remain private under `.k3/jobs/`.
 
 The command-line surface and browser UI use the same validator and runner:
 
@@ -120,7 +124,8 @@ ssh -N -L 8042:127.0.0.1:8042 your-spark-host
 Then open `http://127.0.0.1:8042`. The browser may close after a run starts;
 the Spark runner continues independently. Runtime and temperature limits are
 enforced during model requests, not just between stages. Only one job runs at
-a time, and every cycle receives its own output directory.
+a time. See `UI_HELP.md` for a short explanation of every field and the on-disk
+layout.
 
 ## Private adaptive hotlist
 

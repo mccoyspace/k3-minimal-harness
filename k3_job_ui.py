@@ -23,9 +23,9 @@ from k3_jobs import (
     editor_payload,
     list_jobs,
     load_job,
+    output_directory,
     process_alive,
     resolve_relative,
-    run_directory,
     run_snapshot,
     save_editor_payload,
     start_job,
@@ -189,7 +189,7 @@ async function stopJob(){if(!confirm('Stop the active K3 job after its current p
 function activateTab(name){$$('.tab').forEach(x=>x.classList.toggle('selected',x.dataset.tab===name));$$('.panel').forEach(x=>x.classList.toggle('selected',x.dataset.panel===name))}
 async function refreshStatus(){if(!state.current)return;try{state.status=await api(`/api/status?job=${encodeURIComponent(state.current.slug)}`);renderStatus()}catch(e){$('#status-text').textContent=e.message}}
 function renderStatus(){const d=state.status,a=d.active,run=d.latest||{},s=run.status||{};const running=!!a?.alive;const mode=running?'running':(s.state||'idle');$('#status-dot').className='dot '+mode;$('#status-text').textContent=running?`${a.job} · ${a.run} · running`:(s.state?`${s.state}: ${s.reason||''}`:'Idle');$('#temperature').textContent=d.temperature_c==null?'':'Spark '+Number(d.temperature_c).toFixed(0)+'°C';
-const vals=[['State',s.state||'idle'],['Progress',`${s.completed_stages||0} / ${s.total_stages||0}`],['Cycle',s.cycle||'—'],['Stage',s.current_stage||'—'],['Started',s.started_utc||'—'],['Deadline',s.deadline_utc||'—']];$('#metrics').innerHTML=vals.map(v=>`<div class="metric"><span class="note">${esc(v[0])}</span><b>${esc(v[1])}</b></div>`).join('');
+const vals=[['State',s.state||'idle'],['Progress',`${s.completed_stages||0} / ${s.total_stages||0}`],['Cycle',s.cycle||'—'],['Stage',s.current_stage||'—'],['Output set',run.output_set||'—'],['Deadline',s.deadline_utc||'—']];$('#metrics').innerHTML=vals.map(v=>`<div class="metric"><span class="note">${esc(v[0])}</span><b>${esc(v[1])}</b></div>`).join('');
 $('#outputs').innerHTML=(run.outputs||[]).length?run.outputs.map(o=>`<button class="output" data-path="${esc(o.path)}">${esc(o.path)} <span class="note">${o.bytes} B</span></button>`).join(''):'<span class="note">No outputs yet.</span>';$$('.output').forEach(b=>b.onclick=()=>viewOutput(run.job,run.run,b.dataset.path));if(!$('#viewer').dataset.file){$('#viewer-title').textContent='Recent log';$('#viewer').textContent=run.log_tail||'No log yet.'}}
 async function viewOutput(job,run,path){const d=await api(`/api/output/${encodeURIComponent(job)}/${encodeURIComponent(run)}?path=${encodeURIComponent(path)}`);$('#viewer-title').textContent=path;$('#viewer').dataset.file=path;$('#viewer').textContent=d.content}
 function addStage(){collectEditor();const n=state.current.config.stages.length+1,id=`stage-${n}`,prompt=`prompts/${String(n).padStart(2,'0')}-${id}.md`;state.current.config.stages.push({id,title:`Stage ${n}`,enabled:true,prompt,deliverable:`${String(n).padStart(2,'0')}_${id}.md`});state.current.files[prompt]='Reply with `SAVE '+String(n).padStart(2,'0')+'_'+id+'.md` followed by the requested deliverable.\n';state.dirty=true;renderStages()}
@@ -276,10 +276,15 @@ class JobHandler(BaseHTTPRequestHandler):
                 latest = None
                 if slug:
                     load_job(self.server.jobs_dir, slug)
-                    latest = run_snapshot(self.server.data_dir, slug)
+                    latest = run_snapshot(
+                        self.server.jobs_dir, self.server.data_dir, slug
+                    )
                 elif active and active.get("job"):
                     latest = run_snapshot(
-                        self.server.data_dir, active["job"], active.get("run")
+                        self.server.jobs_dir,
+                        self.server.data_dir,
+                        active["job"],
+                        active.get("run"),
                     )
                 return self.send_json(
                     200,
@@ -296,7 +301,7 @@ class JobHandler(BaseHTTPRequestHandler):
                 slug, run_id = parts
                 query = parse_qs(split.query)
                 relative = query.get("path", [""])[0]
-                root = run_directory(self.server.data_dir, slug, run_id)
+                root = output_directory(self.server.jobs_dir, slug, run_id)
                 target = resolve_relative(root, relative, label="output path")
                 if target.suffix.lower() != ".md" or not target.is_file():
                     raise JobError("output is not a Markdown deliverable")

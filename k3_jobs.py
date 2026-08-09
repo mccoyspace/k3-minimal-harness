@@ -26,6 +26,7 @@ JOB_SCHEMA = "k3.job.v1"
 RUN_SCHEMA = "k3.job-run.v1"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 STAGE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{6}$")
 TEMP_RE = re.compile(r"_input:\s*([0-9]+(?:\.[0-9]+)?)")
 _BACKGROUND_PROCESSES: dict[int, subprocess.Popen[Any]] = {}
 _BACKGROUND_LOCK = threading.Lock()
@@ -269,6 +270,7 @@ def create_job(jobs_dir: Path, slug: str, name: str) -> tuple[Path, dict[str, An
     if job_dir.exists():
         raise JobError(f"job already exists: {slug}")
     (job_dir / "prompts").mkdir(parents=True)
+    (job_dir / "outputs").mkdir()
     config = default_job_config(name.strip())
     atomic_write_json(job_dir / "job.json", config)
     atomic_write_text(
@@ -389,9 +391,38 @@ def active_record(data_dir: Path) -> dict[str, Any] | None:
 
 def run_directory(data_dir: Path, slug: str, run_id: str) -> Path:
     safe_slug(slug)
-    if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[a-f0-9]{6}", run_id):
+    if not RUN_ID_RE.fullmatch(run_id):
         raise JobError("invalid run id")
     return data_dir / slug / "runs" / run_id
+
+
+def output_directory(jobs_dir: Path, slug: str, run_id: str) -> Path:
+    safe_slug(slug)
+    if not RUN_ID_RE.fullmatch(run_id):
+        raise JobError("invalid run id")
+    job_dir = (jobs_dir / slug).resolve()
+    try:
+        job_dir.relative_to(jobs_dir.resolve())
+    except ValueError as exc:
+        raise JobError("job directory escapes jobs root") from exc
+    return job_dir / "outputs" / run_id
+
+
+def create_output_set(
+    job_dir: Path, jobs_dir: Path, slug: str, run_id: str, config: dict[str, Any]
+) -> Path:
+    root = output_directory(jobs_dir, slug, run_id)
+    root.mkdir(parents=True, exist_ok=False)
+    inputs = root / "inputs"
+    inputs.mkdir()
+    atomic_write_json(inputs / "job.json", config)
+    filenames = ["SYSTEM.md", "STATE.md", "BRIEF.md"]
+    filenames.extend(stage["prompt"] for stage in config["stages"])
+    for filename in dict.fromkeys(filenames):
+        source = resolve_relative(job_dir, filename, label="input snapshot")
+        target = resolve_relative(inputs, filename, label="input snapshot")
+        atomic_write_text(target, source.read_text(encoding="utf-8"))
+    return root
 
 
 def new_run_id() -> str:
@@ -406,26 +437,29 @@ def latest_run_id(data_dir: Path, slug: str) -> str | None:
     return candidates[-1] if candidates else None
 
 
-def run_snapshot(data_dir: Path, slug: str, run_id: str | None = None) -> dict[str, Any]:
+def run_snapshot(
+    jobs_dir: Path, data_dir: Path, slug: str, run_id: str | None = None
+) -> dict[str, Any]:
     selected = run_id or latest_run_id(data_dir, slug)
     if selected is None:
         return {"job": slug, "run": None}
-    root = run_directory(data_dir, slug, selected)
-    status_path = root / "run.json"
+    runtime_root = run_directory(data_dir, slug, selected)
+    output_root = output_directory(jobs_dir, slug, selected)
+    status_path = runtime_root / "run.json"
     status = read_json(status_path) if status_path.is_file() else {}
     outputs = []
-    for cycle in sorted(root.glob("cycle-*")):
+    for cycle in sorted(output_root.glob("cycle-*")):
         for path in sorted(cycle.rglob("*.md")):
             outputs.append(
                 {
-                    "path": str(path.relative_to(root)),
+                    "path": str(path.relative_to(output_root)),
                     "bytes": path.stat().st_size,
                     "modified": datetime.fromtimestamp(
                         path.stat().st_mtime, timezone.utc
                     ).isoformat(timespec="seconds"),
                 }
             )
-    log_path = root / "run.log"
+    log_path = runtime_root / "run.log"
     log_tail = ""
     if log_path.is_file():
         with log_path.open("rb") as handle:
@@ -434,6 +468,7 @@ def run_snapshot(data_dir: Path, slug: str, run_id: str | None = None) -> dict[s
     return {
         "job": slug,
         "run": selected,
+        "output_set": str(output_root.relative_to((jobs_dir / slug).resolve())),
         "status": status,
         "outputs": outputs,
         "log_tail": log_tail,
@@ -494,9 +529,10 @@ def run_job(
         )
 
     selected_run = run_id or new_run_id()
-    root = run_directory(data_dir, slug, selected_run)
-    root.mkdir(parents=True, exist_ok=True)
-    events_path = root / "events.jsonl"
+    runtime_root = run_directory(data_dir, slug, selected_run)
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    output_root = create_output_set(job_dir, jobs_dir, slug, selected_run, config)
+    events_path = runtime_root / "events.jsonl"
     started_epoch = time.time()
     deadline_epoch = started_epoch + config["max_runtime_minutes"] * 60
     enabled_stages = [stage for stage in config["stages"] if stage.get("enabled", True)]
@@ -525,7 +561,7 @@ def run_job(
         data_dir / "active.json",
         {"job": slug, "run": selected_run, "pid": os.getpid(), "started_utc": utc_now()},
     )
-    write_run_status(root, status)
+    write_run_status(runtime_root, status)
 
     control = {"stop": False, "signal": None}
     child: subprocess.Popen[Any] | None = None
@@ -543,9 +579,10 @@ def run_job(
     exit_code = 0
     failures: list[str] = []
     try:
-        brief = (job_dir / "BRIEF.md").read_text(encoding="utf-8").strip()
+        input_root = output_root / "inputs"
+        brief = (input_root / "BRIEF.md").read_text(encoding="utf-8").strip()
         for cycle_number in range(1, config["max_cycles"] + 1):
-            cycle_dir = root / f"cycle-{cycle_number:03d}"
+            cycle_dir = output_root / f"cycle-{cycle_number:03d}"
             cycle_dir.mkdir(parents=True, exist_ok=True)
             status["cycle"] = cycle_number
             for stage in enabled_stages:
@@ -573,7 +610,7 @@ def run_job(
 
                 stage_started = time.time()
                 status["current_stage"] = stage["id"]
-                write_run_status(root, status)
+                write_run_status(runtime_root, status)
                 event = {
                     "event": "stage_started",
                     "time": utc_now(),
@@ -583,7 +620,7 @@ def run_job(
                 }
                 append_jsonl(events_path, event)
                 prompt = resolve_relative(
-                    job_dir, stage["prompt"], label="stage prompt"
+                    input_root, stage["prompt"], label="stage prompt"
                 ).read_text(encoding="utf-8").strip()
                 task = f"PROJECT BRIEF\n{brief}\n\nSTAGE\n{prompt}"
                 session = f"{slug}-{selected_run}-c{cycle_number:03d}-{stage['id']}"
@@ -594,11 +631,11 @@ def run_job(
                     "--workspace",
                     str(cycle_dir),
                     "--system",
-                    str(job_dir / "SYSTEM.md"),
+                    str(input_root / "SYSTEM.md"),
                     "--state",
-                    str(job_dir / "STATE.md"),
+                    str(input_root / "STATE.md"),
                     "--data-dir",
-                    str(root / "harness-data"),
+                    str(runtime_root / "harness-data"),
                     "--max-rounds",
                     str(config["max_rounds"]),
                     "--max-output-chars",
@@ -713,7 +750,7 @@ def run_job(
         status["reason"] = final_reason
         status["finished_utc"] = utc_now()
         status["current_stage"] = None
-        write_run_status(root, status)
+        write_run_status(runtime_root, status)
         atomic_write_json(
             data_dir / "active.json",
             {
@@ -860,10 +897,10 @@ def main(argv: list[str] | None = None) -> int:
             active = active_record(data_dir)
             result = {"active": active}
             if args.slug:
-                result["latest"] = run_snapshot(data_dir, args.slug)
+                result["latest"] = run_snapshot(jobs_dir, data_dir, args.slug)
             elif active and active.get("job"):
                 result["latest"] = run_snapshot(
-                    data_dir, active["job"], active.get("run")
+                    jobs_dir, data_dir, active["job"], active.get("run")
                 )
         elif args.command == "stop":
             result = stop_active_job(data_dir)
