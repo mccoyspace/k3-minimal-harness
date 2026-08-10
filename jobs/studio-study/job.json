@@ -8,7 +8,7 @@
   "max_tokens": 448,
   "max_rounds": 1,
   "max_output_chars": 5000,
-  "request_timeout_seconds": 3600,
+  "request_inactivity_timeout_seconds": 3600,
   "command_timeout_seconds": 300,
   "auto_approve": true,
   "stop_on_failure": true,

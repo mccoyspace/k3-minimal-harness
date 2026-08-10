@@ -133,6 +133,12 @@ tokens divided by total model-request time, so long and short stages are
 weighted honestly. Detailed request metrics stay with private runtime records
 under `.k3/jobs/`; generated studio content is not added to Git.
 
+`request_inactivity_timeout_seconds` limits silence between streamed response
+events; it does not cap total generation time. `max_runtime_minutes` remains
+the hard wall-clock limit for the complete job. Existing job files using the
+older `request_timeout_seconds` name continue to load and are migrated when
+saved through the UI.
+
 ## Private adaptive hotlist
 
 The launcher learns into `.k3/learning/studio-usage.waste`, separate from the

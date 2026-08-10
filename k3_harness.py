@@ -144,14 +144,14 @@ class WasteClient:
         url: str,
         model: str,
         api_key: str,
-        timeout: int,
+        inactivity_timeout: int,
         max_tokens: int,
         metrics_file: Path | None = None,
     ):
         self.url = url.rstrip("/") + "/chat/completions"
         self.model = model
         self.api_key = api_key
-        self.timeout = timeout
+        self.inactivity_timeout = inactivity_timeout
         self.max_tokens = max_tokens
         self.metrics_file = metrics_file
         self.request_metrics: list[dict[str, Any]] = []
@@ -245,7 +245,9 @@ class WasteClient:
         first_content_at: float | None = None
         print("K3 is processing the request...", file=sys.stderr, flush=True)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(
+                request, timeout=self.inactivity_timeout
+            ) as response:
                 content: list[str] = []
                 usage: dict[str, Any] = {}
                 waste: dict[str, Any] = {}
@@ -535,7 +537,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-rounds", type=int, default=2)
     parser.add_argument("--max-output-chars", type=int, default=6000)
     parser.add_argument("--command-timeout", type=int, default=300)
-    parser.add_argument("--request-timeout", type=int, default=3600)
+    parser.add_argument(
+        "--request-inactivity-timeout",
+        "--request-timeout",
+        dest="request_inactivity_timeout",
+        type=int,
+        default=3600,
+        help="maximum seconds without streamed response data",
+    )
     parser.add_argument("--max-tokens", type=int, default=384)
     parser.add_argument("--url", default=os.getenv("K3_URL", "http://127.0.0.1:8000/v1"))
     parser.add_argument("--model", default=os.getenv("K3_MODEL", "k3"))
@@ -568,7 +577,7 @@ def main() -> int:
         args.url,
         args.model,
         args.api_key,
-        args.request_timeout,
+        args.request_inactivity_timeout,
         args.max_tokens,
         args.metrics_file.expanduser().resolve() if args.metrics_file else None,
     )

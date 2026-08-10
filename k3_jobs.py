@@ -24,6 +24,8 @@ DEFAULT_DATA_DIR = PROJECT_DIR / ".k3" / "jobs"
 DEFAULT_HARNESS = PROJECT_DIR / "bin" / "k3"
 JOB_SCHEMA = "k3.job.v1"
 RUN_SCHEMA = "k3.job-run.v1"
+REQUEST_INACTIVITY_KEY = "request_inactivity_timeout_seconds"
+LEGACY_REQUEST_TIMEOUT_KEY = "request_timeout_seconds"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 STAGE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{6}$")
@@ -192,6 +194,18 @@ def bounded_int(config: dict[str, Any], key: str, lo: int, hi: int) -> int:
     return value
 
 
+def request_inactivity_timeout(config: dict[str, Any]) -> int:
+    current = config.get(REQUEST_INACTIVITY_KEY)
+    legacy = config.get(LEGACY_REQUEST_TIMEOUT_KEY)
+    if current is not None and legacy is not None and current != legacy:
+        raise JobError(
+            f"{REQUEST_INACTIVITY_KEY} conflicts with legacy "
+            f"{LEGACY_REQUEST_TIMEOUT_KEY}"
+        )
+    key = REQUEST_INACTIVITY_KEY if current is not None else LEGACY_REQUEST_TIMEOUT_KEY
+    return bounded_int(config, key, 30, 24 * 60 * 60)
+
+
 def validate_job_config(
     config: Any,
     job_dir: Path,
@@ -214,7 +228,7 @@ def validate_job_config(
     bounded_int(config, "max_tokens", 1, 4096)
     bounded_int(config, "max_rounds", 0, 16)
     bounded_int(config, "max_output_chars", 400, 100_000)
-    bounded_int(config, "request_timeout_seconds", 30, 24 * 60 * 60)
+    request_inactivity_timeout(config)
     bounded_int(config, "command_timeout_seconds", 1, 24 * 60 * 60)
     for key in ("auto_approve", "stop_on_failure"):
         if not isinstance(config.get(key), bool):
@@ -336,7 +350,7 @@ def default_job_config(name: str) -> dict[str, Any]:
         "max_tokens": 384,
         "max_rounds": 1,
         "max_output_chars": 6000,
-        "request_timeout_seconds": 3600,
+        "request_inactivity_timeout_seconds": 3600,
         "command_timeout_seconds": 300,
         "auto_approve": False,
         "stop_on_failure": True,
@@ -412,6 +426,13 @@ def save_editor_payload(jobs_dir: Path, slug: str, payload: Any) -> dict[str, An
     if not isinstance(payload, dict):
         raise JobError("editor payload must be an object")
     config = payload.get("config")
+    if (
+        isinstance(config, dict)
+        and REQUEST_INACTIVITY_KEY not in config
+        and LEGACY_REQUEST_TIMEOUT_KEY in config
+    ):
+        config = dict(config)
+        config[REQUEST_INACTIVITY_KEY] = config.pop(LEGACY_REQUEST_TIMEOUT_KEY)
     files = payload.get("files")
     if not isinstance(files, dict):
         raise JobError("files must be an object")
@@ -739,8 +760,8 @@ def run_job(
                     str(config["max_output_chars"]),
                     "--max-tokens",
                     str(config["max_tokens"]),
-                    "--request-timeout",
-                    str(config["request_timeout_seconds"]),
+                    "--request-inactivity-timeout",
+                    str(request_inactivity_timeout(config)),
                     "--command-timeout",
                     str(config["command_timeout_seconds"]),
                     "--metrics-file",

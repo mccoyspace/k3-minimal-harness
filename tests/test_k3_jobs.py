@@ -81,6 +81,8 @@ class TestJobFiles(JobFixture):
         create_job(self.jobs, "sample", "Sample Job")
         _, config = load_job(self.jobs, "sample")
         self.assertEqual(config["schema"], "k3.job.v1")
+        self.assertEqual(config["request_inactivity_timeout_seconds"], 3600)
+        self.assertNotIn("request_timeout_seconds", config)
         payload = editor_payload(self.jobs, "sample")
         payload["config"]["name"] = "Edited Job"
         payload["files"]["BRIEF.md"] = "# Edited brief\n"
@@ -93,6 +95,19 @@ class TestJobFiles(JobFixture):
         invalid["files"].pop("prompts/01-draft.md")
         with self.assertRaisesRegex(JobError, "escapes"):
             save_editor_payload(self.jobs, "sample", invalid)
+
+    def test_legacy_request_timeout_loads_and_migrates_on_save(self):
+        job_dir, config = create_job(self.jobs, "sample", "Sample Job")
+        config["request_timeout_seconds"] = config.pop(
+            "request_inactivity_timeout_seconds"
+        )
+        (job_dir / "job.json").write_text(json.dumps(config), encoding="utf-8")
+
+        payload = editor_payload(self.jobs, "sample")
+        self.assertEqual(payload["config"]["request_timeout_seconds"], 3600)
+        saved = save_editor_payload(self.jobs, "sample", payload)
+        self.assertEqual(saved["config"]["request_inactivity_timeout_seconds"], 3600)
+        self.assertNotIn("request_timeout_seconds", saved["config"])
 
     def test_runner_honors_cycles_and_records_outputs(self):
         job_dir, config = create_job(self.jobs, "sample", "Sample Job")

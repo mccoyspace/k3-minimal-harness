@@ -16,6 +16,7 @@ transcripts, and logs live under `.k3/`.
 | Temperature cutoff | `job.json` | Stops the run if the Spark reaches this temperature. |
 | Output token limit | `job.json` | Maximum K3 response length for each request. |
 | Command rounds | `job.json` | Maximum number of bounded `ACT` exchanges per stage. |
+| Model inactivity seconds | `job.json` | Stops one model request if no streamed response data arrives for this interval; it is not a total request-duration limit. |
 | Auto-approve | `job.json` | Allows bounded shell actions without interactive approval. |
 | Stop at first failed stage | `job.json` | Prevents later stages from running after a failure. |
 | Brief | `BRIEF.md` | Project, desired outcome, audience, and constraints; sent with every stage. |
@@ -86,6 +87,11 @@ also includes command execution and small harness overhead. Run-level effective
 tok/s is weighted from the same totals rather than averaging stage rates.
 Historical runs made before metrics collection remain readable and simply show
 no stage performance data.
+
+`request_inactivity_timeout_seconds` is the configuration key behind Model
+inactivity seconds. The older `request_timeout_seconds` spelling remains
+accepted when loading existing jobs, and saving one through the UI migrates it
+to the clearer name.
 
 The `outputs/` directories are ignored by Git because studio results may be
 private. Copy or publish an output set deliberately when you want to share it.
