@@ -75,6 +75,96 @@ def read_json(path: Path) -> Any:
         raise JobError(f"could not read {path}: {exc}") from exc
 
 
+def optional_number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def stage_metrics_record(
+    metrics_path: Path,
+    *,
+    cycle: int,
+    stage: dict[str, Any],
+    ok: bool,
+    stage_elapsed_s: float,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    error: str | None = None
+    if metrics_path.is_file():
+        try:
+            value = read_json(metrics_path)
+            if isinstance(value, dict) and isinstance(value.get("summary"), dict):
+                summary = value["summary"]
+            else:
+                error = "metrics file did not contain a summary"
+        except JobError as exc:
+            error = str(exc)
+    record = {
+        "cycle": cycle,
+        "stage": stage["id"],
+        "title": stage["title"],
+        "ok": ok,
+        "request_count": optional_number(summary.get("request_count")) or 0,
+        "ttft_s": optional_number(summary.get("first_response_ttft_s")),
+        "model_elapsed_s": optional_number(summary.get("model_elapsed_s")),
+        "stage_elapsed_s": round(stage_elapsed_s, 3),
+        "prompt_tokens": optional_number(summary.get("prompt_tokens")) or 0,
+        "completion_tokens": optional_number(summary.get("completion_tokens")) or 0,
+        "effective_tok_s": optional_number(summary.get("effective_tok_s")),
+    }
+    if error:
+        record["metrics_error"] = error
+    return record
+
+
+def aggregate_stage_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
+    model_elapsed = sum(
+        float(value)
+        for row in records
+        if (value := optional_number(row.get("model_elapsed_s"))) is not None
+    )
+    stage_elapsed = sum(
+        float(value)
+        for row in records
+        if (value := optional_number(row.get("stage_elapsed_s"))) is not None
+    )
+    prompt_tokens = sum(
+        int(value)
+        for row in records
+        if (value := optional_number(row.get("prompt_tokens"))) is not None
+    )
+    completion_tokens = sum(
+        int(value)
+        for row in records
+        if (value := optional_number(row.get("completion_tokens"))) is not None
+    )
+    request_count = sum(
+        int(value)
+        for row in records
+        if (value := optional_number(row.get("request_count"))) is not None
+    )
+    ttfts = [
+        float(value)
+        for row in records
+        if (value := optional_number(row.get("ttft_s"))) is not None
+    ]
+    return {
+        "stages_recorded": len(records),
+        "request_count": request_count,
+        "mean_ttft_s": round(sum(ttfts) / len(ttfts), 3) if ttfts else None,
+        "model_elapsed_s": round(model_elapsed, 3),
+        "stage_elapsed_s": round(stage_elapsed, 3),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "effective_tok_s": (
+            round(completion_tokens / model_elapsed, 6)
+            if model_elapsed > 0
+            else None
+        ),
+    }
+
+
 def safe_slug(value: str, *, label: str = "job slug") -> str:
     if not isinstance(value, str) or not SLUG_RE.fullmatch(value):
         raise JobError(f"{label} must match {SLUG_RE.pattern}")
@@ -555,6 +645,8 @@ def run_job(
         "completed_stages": 0,
         "total_stages": total_stages,
         "last_temperature_c": None,
+        "stage_metrics": [],
+        "metrics": aggregate_stage_metrics([]),
     }
     data_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
@@ -624,6 +716,11 @@ def run_job(
                 ).read_text(encoding="utf-8").strip()
                 task = f"PROJECT BRIEF\n{brief}\n\nSTAGE\n{prompt}"
                 session = f"{slug}-{selected_run}-c{cycle_number:03d}-{stage['id']}"
+                metrics_path = (
+                    runtime_root
+                    / "stage-metrics"
+                    / f"cycle-{cycle_number:03d}-{stage['id']}.json"
+                )
                 command = [
                     str(harness),
                     "--session",
@@ -646,6 +743,8 @@ def run_job(
                     str(config["request_timeout_seconds"]),
                     "--command-timeout",
                     str(config["command_timeout_seconds"]),
+                    "--metrics-file",
+                    str(metrics_path),
                 ]
                 if config["auto_approve"]:
                     command.append("--yes")
@@ -715,6 +814,16 @@ def run_job(
                                 result or 66,
                             )
 
+                stage_elapsed_s = time.time() - stage_started
+                metrics = stage_metrics_record(
+                    metrics_path,
+                    cycle=cycle_number,
+                    stage=stage,
+                    ok=stage_ok,
+                    stage_elapsed_s=stage_elapsed_s,
+                )
+                status["stage_metrics"].append(metrics)
+                status["metrics"] = aggregate_stage_metrics(status["stage_metrics"])
                 append_jsonl(
                     events_path,
                     {
@@ -725,13 +834,15 @@ def run_job(
                         "deliverable": stage["deliverable"],
                         "exit": result,
                         "ok": stage_ok,
-                        "elapsed_s": round(time.time() - stage_started, 3),
+                        "elapsed_s": round(stage_elapsed_s, 3),
+                        "metrics": metrics,
                     },
                 )
                 if stage_ok:
                     status["completed_stages"] += 1
                     print(f"[{utc_now()}] stage {stage['id']} completed", flush=True)
-                elif config["stop_on_failure"] or interrupted_reason:
+                write_run_status(runtime_root, status)
+                if not stage_ok and (config["stop_on_failure"] or interrupted_reason):
                     break
             if final_state != "completed":
                 break

@@ -26,6 +26,9 @@ transcripts, and logs live under `.k3/`.
 | Expected Markdown file | `job.json` | Deliverable path that must exist before the stage succeeds. |
 | Stage prompt | `prompts/*.md` | Instructions specific to that step. |
 | Start/stop/status | `.k3/jobs/` | Controls and reports the live process; not part of the reusable job. |
+| Effective tok/s | `.k3/jobs/<slug>/runs/<run-id>/run.json` | Output tokens divided by total model-request time, shown per stage and for the run. |
+| Time to first token (TTFT) | `.k3/jobs/<slug>/runs/<run-id>/run.json` | Request submission to the first visible response content on the first model call in a stage. |
+| Stage performance | `.k3/jobs/<slug>/runs/<run-id>/stage-metrics/` | Per-request token and timing detail; the UI shows a compact per-stage rollup. |
 | Outputs | `jobs/<slug>/outputs/<run-id>/` | Uniquely identified result set for one run. |
 | Recent log | `.k3/jobs/<slug>/runs/<run-id>/run.log` | Operational diagnostics kept outside the job bundle. |
 
@@ -74,6 +77,15 @@ sequence. All stages in a cycle share the same cycle directory, so later stages
 can inspect earlier deliverables. A stage succeeds only when its expected
 Markdown file exists. The harness records operational status and logs under
 `.k3/`, while the generated Markdown remains in the job's output set.
+
+The client uses WASTE's streaming response so it can timestamp the first
+visible model content. For a stage with `ACT` follow-ups, TTFT refers to the
+first model call, while effective tok/s combines all model calls in that stage:
+total completion tokens divided by total model-request wall time. `Stage time`
+also includes command execution and small harness overhead. Run-level effective
+tok/s is weighted from the same totals rather than averaging stage rates.
+Historical runs made before metrics collection remain readable and simply show
+no stage performance data.
 
 The `outputs/` directories are ignored by Git because studio results may be
 private. Copy or publish an output set deliberately when you want to share it.

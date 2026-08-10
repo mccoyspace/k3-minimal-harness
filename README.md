@@ -127,6 +127,12 @@ enforced during model requests, not just between stages. Only one job runs at
 a time. See `UI_HELP.md` for a short explanation of every field and the on-disk
 layout.
 
+The Run tab records TTFT, completion-token counts, model time, stage wall time,
+and effective output tok/s for each stage. The run summary uses total output
+tokens divided by total model-request time, so long and short stages are
+weighted honestly. Detailed request metrics stay with private runtime records
+under `.k3/jobs/`; generated studio content is not added to Git.
+
 ## Private adaptive hotlist
 
 The launcher learns into `.k3/learning/studio-usage.waste`, separate from the

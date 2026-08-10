@@ -24,6 +24,7 @@ DEFAULT_STATE = PROJECT_DIR / "PROJECT_STATE.md"
 DEFAULT_DATA = PROJECT_DIR / ".k3"
 DEFAULT_USAGE_HOTLIST = DEFAULT_DATA / "learning" / "studio-usage.waste"
 COMMAND_SHELL = "/bin/zsh" if Path("/bin/zsh").exists() else "/bin/bash"
+METRICS_SCHEMA = "k3.harness-metrics.v1"
 
 
 def safe_name(value: str) -> str:
@@ -138,12 +139,87 @@ def clipped(text: str, limit: int) -> str:
 
 
 class WasteClient:
-    def __init__(self, url: str, model: str, api_key: str, timeout: int, max_tokens: int):
+    def __init__(
+        self,
+        url: str,
+        model: str,
+        api_key: str,
+        timeout: int,
+        max_tokens: int,
+        metrics_file: Path | None = None,
+    ):
         self.url = url.rstrip("/") + "/chat/completions"
         self.model = model
         self.api_key = api_key
         self.timeout = timeout
         self.max_tokens = max_tokens
+        self.metrics_file = metrics_file
+        self.request_metrics: list[dict[str, Any]] = []
+
+    def _write_metrics(self) -> None:
+        if self.metrics_file is None:
+            return
+        elapsed = sum(float(row["elapsed_s"]) for row in self.request_metrics)
+        prompt_tokens = sum(int(row["prompt_tokens"]) for row in self.request_metrics)
+        completion_tokens = sum(
+            int(row["completion_tokens"]) for row in self.request_metrics
+        )
+        first_ttft = (
+            self.request_metrics[0].get("ttft_s") if self.request_metrics else None
+        )
+        payload = {
+            "schema": METRICS_SCHEMA,
+            "requests": self.request_metrics,
+            "summary": {
+                "request_count": len(self.request_metrics),
+                "first_response_ttft_s": first_ttft,
+                "model_elapsed_s": round(elapsed, 3),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "effective_tok_s": (
+                    round(completion_tokens / elapsed, 6) if elapsed > 0 else None
+                ),
+            },
+        }
+        self.metrics_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.metrics_file.with_name(
+            f".{self.metrics_file.name}.tmp-{os.getpid()}"
+        )
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, self.metrics_file)
+
+    def _record_metrics(
+        self,
+        *,
+        elapsed: float,
+        ttft: float | None,
+        usage: dict[str, Any],
+        finish_reason: Any,
+    ) -> None:
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        prompt_tokens = prompt_tokens if isinstance(prompt_tokens, int) else 0
+        completion_tokens = (
+            completion_tokens if isinstance(completion_tokens, int) else 0
+        )
+        self.request_metrics.append(
+            {
+                "request": len(self.request_metrics) + 1,
+                "elapsed_s": round(elapsed, 3),
+                "ttft_s": round(ttft, 3) if ttft is not None else None,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "effective_tok_s": (
+                    round(completion_tokens / elapsed, 6) if elapsed > 0 else None
+                ),
+                "finish_reason": finish_reason,
+            }
+        )
+        self._write_metrics()
 
     def complete(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
         payload = {
@@ -153,7 +229,8 @@ class WasteClient:
             "top_p": 1,
             "max_completion_tokens": self.max_tokens,
             "reasoning_effort": "off",
-            "stream": False,
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -165,10 +242,65 @@ class WasteClient:
             method="POST",
         )
         started = time.monotonic()
+        first_content_at: float | None = None
         print("K3 is processing the request...", file=sys.stderr, flush=True)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                result = json.load(response)
+                content: list[str] = []
+                usage: dict[str, Any] = {}
+                waste: dict[str, Any] = {}
+                finish_reason: Any = None
+                saw_done = False
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        saw_done = True
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError(
+                            f"WASTE returned invalid SSE JSON: {exc}"
+                        ) from exc
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = chunk["usage"]
+                    if isinstance(chunk.get("waste"), dict):
+                        waste = chunk["waste"]
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0] if isinstance(choices[0], dict) else {}
+                    if choice.get("finish_reason") is not None:
+                        finish_reason = choice["finish_reason"]
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    piece = delta.get("content")
+                    reasoning = delta.get("reasoning_content")
+                    tool_calls = delta.get("tool_calls")
+                    if first_content_at is None and (
+                        (isinstance(piece, str) and piece)
+                        or (isinstance(reasoning, str) and reasoning)
+                        or (isinstance(tool_calls, list) and tool_calls)
+                    ):
+                        first_content_at = time.monotonic()
+                    if isinstance(piece, str):
+                        content.append(piece)
+                if not saw_done:
+                    raise RuntimeError("WASTE streaming response ended before [DONE]")
+                result = {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "".join(content)},
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                    "usage": usage,
+                    "waste": waste,
+                }
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"WASTE returned HTTP {exc.code}: {body}") from exc
@@ -176,6 +308,7 @@ class WasteClient:
             raise RuntimeError(f"could not reach WASTE at {self.url}: {exc.reason}") from exc
 
         elapsed = time.monotonic() - started
+        ttft = first_content_at - started if first_content_at is not None else None
         try:
             text = result["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
@@ -184,10 +317,15 @@ class WasteClient:
         usage = result.get("usage", {})
         cache = result.get("waste", {}).get("prefix_cache", {})
         details = [f"elapsed={elapsed:.1f}s"]
+        if ttft is not None:
+            details.append(f"ttft={ttft:.1f}s")
         if usage:
             details.append(
                 f"tokens={usage.get('prompt_tokens', '?')}+{usage.get('completion_tokens', '?')}"
             )
+            completion_tokens = usage.get("completion_tokens")
+            if isinstance(completion_tokens, int) and elapsed > 0:
+                details.append(f"effective={completion_tokens / elapsed:.3f} tok/s")
         if cache:
             details.append(
                 "cache="
@@ -196,6 +334,12 @@ class WasteClient:
                 f"replayed={cache.get('replayed_tokens', 0)}"
             )
         print("K3 response: " + ", ".join(details), file=sys.stderr, flush=True)
+        self._record_metrics(
+            elapsed=elapsed,
+            ttft=ttft,
+            usage=usage,
+            finish_reason=result["choices"][0].get("finish_reason"),
+        )
         return text, result
 
 
@@ -396,6 +540,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--url", default=os.getenv("K3_URL", "http://127.0.0.1:8000/v1"))
     parser.add_argument("--model", default=os.getenv("K3_MODEL", "k3"))
     parser.add_argument("--api-key", default=os.getenv("K3_API_KEY", ""))
+    parser.add_argument(
+        "--metrics-file",
+        type=Path,
+        default=None,
+        help="write per-request timing and token metrics as JSON",
+    )
     return parser.parse_args()
 
 
@@ -415,7 +565,12 @@ def main() -> int:
     messages = load_messages(session_path)
     system_prompt = system_file.read_text(encoding="utf-8").strip()
     client = WasteClient(
-        args.url, args.model, args.api_key, args.request_timeout, args.max_tokens
+        args.url,
+        args.model,
+        args.api_key,
+        args.request_timeout,
+        args.max_tokens,
+        args.metrics_file.expanduser().resolve() if args.metrics_file else None,
     )
     print(f"Session: {session} ({len(messages)} saved messages)")
     print(f"Workspace: {workspace}")

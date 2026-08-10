@@ -87,6 +87,8 @@ textarea{width:100%;min-height:240px;resize:vertical;line-height:1.5}.small-area
 .metric{background:#12130f;border:1px solid var(--line);border-radius:8px;padding:10px}.metric b{display:block;font-size:18px;color:var(--ink)}
 .outputs{display:grid;gap:6px;max-height:320px;overflow:auto}.output{border:1px solid var(--line);background:#12130f;color:var(--ink);
 padding:8px 10px;border-radius:7px;text-align:left}.output:hover{border-color:var(--cool)}
+.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:760px}th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{color:var(--muted);font-size:12px;font-weight:400}th:first-child,td:first-child{text-align:left}tbody tr:last-child td{border-bottom:0}
 pre{white-space:pre-wrap;word-break:break-word;background:#0b0c0a;border:1px solid var(--line);border-radius:8px;padding:14px;max-height:500px;overflow:auto;color:#d4d2ca}
 .toast{position:fixed;right:22px;bottom:22px;background:#292b25;border:1px solid var(--line);border-radius:9px;padding:11px 14px;display:none;max-width:460px;z-index:5}
 @media(max-width:850px){.shell{grid-template-columns:1fr}aside{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}
@@ -157,6 +159,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#0b0c0a;border:1px sol
         </div>
         <div class="card"><h2 id="viewer-title">Recent log</h2><pre id="viewer">No run selected.</pre></div>
       </div>
+      <div class="card"><h2>Stage performance</h2><p class="note">TTFT is request submission to the first visible response from the first model call. Effective tok/s includes the full model-request time.</p><div id="stage-performance" class="table-wrap"><span class="note">No stage metrics yet.</span></div></div>
     </div>
   </section>
 </main>
@@ -188,8 +191,11 @@ async function startJob(){await saveJob();const r=await api(`/api/jobs/${encodeU
 async function stopJob(){if(!confirm('Stop the active K3 job after its current process receives a termination request?'))return;await api('/api/stop',{method:'POST',body:'{}'});toast('Stop requested');setTimeout(refreshStatus,800)}
 function activateTab(name){$$('.tab').forEach(x=>x.classList.toggle('selected',x.dataset.tab===name));$$('.panel').forEach(x=>x.classList.toggle('selected',x.dataset.panel===name))}
 async function refreshStatus(){if(!state.current)return;try{state.status=await api(`/api/status?job=${encodeURIComponent(state.current.slug)}`);renderStatus()}catch(e){$('#status-text').textContent=e.message}}
+function fmtSeconds(value){return value==null?'—':Number(value).toFixed(1)+'s'}
+function fmtRate(value){return value==null?'—':Number(value).toFixed(3)}
 function renderStatus(){const d=state.status,a=d.active,run=d.latest||{},s=run.status||{};const running=!!a?.alive;const mode=running?'running':(s.state||'idle');$('#status-dot').className='dot '+mode;$('#status-text').textContent=running?`${a.job} · ${a.run} · running`:(s.state?`${s.state}: ${s.reason||''}`:'Idle');$('#temperature').textContent=d.temperature_c==null?'':'Spark '+Number(d.temperature_c).toFixed(0)+'°C';
-const vals=[['State',s.state||'idle'],['Progress',`${s.completed_stages||0} / ${s.total_stages||0}`],['Cycle',s.cycle||'—'],['Stage',s.current_stage||'—'],['Output set',run.output_set||'—'],['Deadline',s.deadline_utc||'—']];$('#metrics').innerHTML=vals.map(v=>`<div class="metric"><span class="note">${esc(v[0])}</span><b>${esc(v[1])}</b></div>`).join('');
+const m=s.metrics||{},rows=s.stage_metrics||[];const vals=[['State',s.state||'idle'],['Progress',`${s.completed_stages||0} / ${s.total_stages||0}`],['Cycle',s.cycle||'—'],['Stage',s.current_stage||'—'],['Effective tok/s',fmtRate(m.effective_tok_s)],['Mean TTFT',fmtSeconds(m.mean_ttft_s)],['Output tokens',m.completion_tokens??'—'],['Output set',run.output_set||'—'],['Deadline',s.deadline_utc||'—']];$('#metrics').innerHTML=vals.map(v=>`<div class="metric"><span class="note">${esc(v[0])}</span><b>${esc(v[1])}</b></div>`).join('');
+$('#stage-performance').innerHTML=rows.length?`<table><thead><tr><th>Cycle · stage</th><th>Requests</th><th>TTFT</th><th>Output tokens</th><th>Effective tok/s</th><th>Model time</th><th>Stage time</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.cycle+' · '+(r.title||r.stage))}</td><td>${esc(r.request_count??0)}</td><td>${esc(fmtSeconds(r.ttft_s))}</td><td>${esc(r.completion_tokens??0)}</td><td>${esc(fmtRate(r.effective_tok_s))}</td><td>${esc(fmtSeconds(r.model_elapsed_s))}</td><td>${esc(fmtSeconds(r.stage_elapsed_s))}</td></tr>`).join('')}</tbody></table>`:'<span class="note">No stage metrics for this run. Older runs remain available without reconstructed timing.</span>';
 $('#outputs').innerHTML=(run.outputs||[]).length?run.outputs.map(o=>`<button class="output" data-path="${esc(o.path)}">${esc(o.path)} <span class="note">${o.bytes} B</span></button>`).join(''):'<span class="note">No outputs yet.</span>';$$('.output').forEach(b=>b.onclick=()=>viewOutput(run.job,run.run,b.dataset.path));if(!$('#viewer').dataset.file){$('#viewer-title').textContent='Recent log';$('#viewer').textContent=run.log_tail||'No log yet.'}}
 async function viewOutput(job,run,path){const d=await api(`/api/output/${encodeURIComponent(job)}/${encodeURIComponent(run)}?path=${encodeURIComponent(path)}`);$('#viewer-title').textContent=path;$('#viewer').dataset.file=path;$('#viewer').textContent=d.content}
 function addStage(){collectEditor();const n=state.current.config.stages.length+1,id=`stage-${n}`,prompt=`prompts/${String(n).padStart(2,'0')}-${id}.md`;state.current.config.stages.push({id,title:`Stage ${n}`,enabled:true,prompt,deliverable:`${String(n).padStart(2,'0')}_${id}.md`});state.current.files[prompt]='Reply with `SAVE '+String(n).padStart(2,'0')+'_'+id+'.md` followed by the requested deliverable.\n';state.dirty=true;renderStages()}

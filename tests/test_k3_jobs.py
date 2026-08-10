@@ -26,6 +26,7 @@ from k3_jobs import (
 
 
 FAKE_HARNESS = r"""#!/usr/bin/env python3
+import json
 import re
 import sys
 from pathlib import Path
@@ -38,6 +39,21 @@ if not match:
 target = (workspace / match.group(1)).resolve()
 target.parent.mkdir(parents=True, exist_ok=True)
 target.write_text("# Fake K3 deliverable\n", encoding="utf-8")
+if "--metrics-file" in sys.argv:
+    metrics = Path(sys.argv[sys.argv.index("--metrics-file") + 1])
+    metrics.parent.mkdir(parents=True, exist_ok=True)
+    metrics.write_text(json.dumps({
+        "schema": "k3.harness-metrics.v1",
+        "requests": [],
+        "summary": {
+            "request_count": 1,
+            "first_response_ttft_s": 1.25,
+            "model_elapsed_s": 4.0,
+            "prompt_tokens": 12,
+            "completion_tokens": 8,
+            "effective_tok_s": 2.0
+        }
+    }), encoding="utf-8")
 """
 
 SLOW_HARNESS = r"""#!/usr/bin/env python3
@@ -98,6 +114,11 @@ class TestJobFiles(JobFixture):
         snapshot = run_snapshot(self.jobs, self.data, "sample", run_id)
         self.assertEqual(snapshot["status"]["state"], "completed")
         self.assertEqual(snapshot["status"]["completed_stages"], 2)
+        self.assertEqual(len(snapshot["status"]["stage_metrics"]), 2)
+        self.assertEqual(snapshot["status"]["stage_metrics"][0]["ttft_s"], 1.25)
+        self.assertEqual(snapshot["status"]["metrics"]["mean_ttft_s"], 1.25)
+        self.assertEqual(snapshot["status"]["metrics"]["completion_tokens"], 16)
+        self.assertEqual(snapshot["status"]["metrics"]["effective_tok_s"], 2.0)
         self.assertEqual(
             [item["path"] for item in snapshot["outputs"]],
             ["cycle-001/01_draft.md", "cycle-002/01_draft.md"],
@@ -109,6 +130,16 @@ class TestJobFiles(JobFixture):
             (job_dir / "BRIEF.md").read_text(encoding="utf-8"),
         )
         self.assertFalse((self.data / "sample" / "runs" / run_id / "cycle-001").exists())
+        self.assertTrue(
+            (
+                self.data
+                / "sample"
+                / "runs"
+                / run_id
+                / "stage-metrics"
+                / "cycle-001-draft.json"
+            ).is_file()
+        )
         self.assertFalse(active_record(self.data)["alive"])
 
     def test_temperature_guard_stops_before_first_stage(self):
