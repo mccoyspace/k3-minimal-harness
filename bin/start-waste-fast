@@ -3,15 +3,23 @@
 set -euo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-waste_repo=${WASTE_REPO:?set WASTE_REPO to the waste-spark checkout}
-model=${WASTE_MODEL:?set WASTE_MODEL to the K3 .waste container}
+waste_repo=${WASTE_K3_REPO:-${WASTE_REPO:-}}
+model=${WASTE_K3_MODEL:-${WASTE_MODEL:-}}
+[[ -n $waste_repo ]] || {
+    echo "set WASTE_REPO or WASTE_K3_REPO to the warp-spark checkout" >&2
+    exit 2
+}
+[[ -n $model ]] || {
+    echo "set WASTE_MODEL or WASTE_K3_MODEL to the K3 .waste container" >&2
+    exit 2
+}
 usage_path=${K3_USAGE_PATH:-$project_dir/.k3/learning/studio-usage.waste}
-cpu_list=${WASTE_CPU_LIST:-5-9,15-19}
-budget=${WASTE_BUDGET_BYTES:-95172120576}
+cpu_list=${WASTE_K3_CPU_LIST:-${WASTE_CPU_LIST:-5-9,15-19}}
+budget=${WASTE_K3_BUDGET_BYTES:-${WASTE_BUDGET_BYTES:-95172120576}}
 prefix_cache=${WASTE_PREFIX_CACHE:-2G}
 prefix_entries=${WASTE_PREFIX_ENTRIES:-4}
-status_path=${WASTE_QOS_STATUS:-/var/lib/waste-qos/k3-minimal-fast-status.json}
-pid_path=${K3_SERVER_PID:-/tmp/k3-minimal-fast-server.pid}
+status_path=${K3_QOS_STATUS:-${WASTE_QOS_STATUS:-/var/lib/waste-qos/k3-minimal-fast-status.json}}
+pid_path=${WASTE_SERVER_PID:-${K3_SERVER_PID:-/tmp/k3-minimal-fast-server.pid}}
 
 if [[ $(uname -s) != Linux ]]; then
     echo "start-waste-fast must run on the Spark" >&2

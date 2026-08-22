@@ -1,63 +1,6 @@
 #!/usr/bin/env bash
-# Safely replace the managed server with the qualified fast launcher.
+# Backward-compatible name for selecting the K3 studio profile.
 set -euo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-pid_path=${K3_SERVER_PID:-/tmp/k3-minimal-fast-server.pid}
-log_path=${K3_SERVER_LOG:-/tmp/k3-minimal-fast-server.log}
-base_url=${WASTE_BASE_URL:-http://127.0.0.1:8000}
-
-if [[ -f $pid_path ]]; then
-    old_pid=$(tr -d '[:space:]' <"$pid_path")
-    if [[ $old_pid =~ ^[0-9]+$ ]] && sudo -n kill -0 "$old_pid" 2>/dev/null; then
-        cmdline=$(sudo -n tr '\0' ' ' <"/proc/$old_pid/cmdline")
-        if [[ $cmdline != *pm_qos_exec.py* || $cmdline != *--status* ]]; then
-            echo "refusing to stop unrecognized PID $old_pid" >&2
-            exit 2
-        fi
-        echo "Stopping managed WASTE supervisor PID $old_pid"
-        sudo -n kill -TERM "$old_pid"
-        for _ in $(seq 1 60); do
-            if ! sudo -n kill -0 "$old_pid" 2>/dev/null; then
-                break
-            fi
-            sleep 1
-        done
-        if sudo -n kill -0 "$old_pid" 2>/dev/null; then
-            echo "managed WASTE supervisor did not stop cleanly" >&2
-            exit 1
-        fi
-    fi
-elif curl --fail --silent --max-time 2 "$base_url/health" >/dev/null 2>&1; then
-    echo "port is serving WASTE but no managed PID file exists; refusing" >&2
-    exit 2
-fi
-
-echo "Starting qualified studio server"
-: >"$pid_path"
-setsid -f "$project_dir/bin/start-waste-fast" </dev/null >"$log_path" 2>&1
-
-for _ in $(seq 1 600); do
-    if curl --fail --silent --max-time 2 "$base_url/health" >/dev/null 2>&1; then
-        new_pid=$(tr -d '[:space:]' <"$pid_path")
-        [[ $new_pid =~ ^[0-9]+$ ]] || {
-            echo "server is healthy but its managed PID is missing" >&2
-            exit 1
-        }
-        "$project_dir/bin/check-waste"
-        echo "Studio WASTE server ready (supervisor PID $new_pid)"
-        exit 0
-    fi
-    new_pid=$(tr -d '[:space:]' <"$pid_path")
-    if [[ $new_pid =~ ^[0-9]+$ ]] &&
-            ! sudo -n kill -0 "$new_pid" 2>/dev/null; then
-        echo "studio WASTE server exited during startup" >&2
-        tail -50 "$log_path" >&2
-        exit 1
-    fi
-    sleep 1
-done
-
-echo "studio WASTE server did not become ready within 600 seconds" >&2
-tail -50 "$log_path" >&2
-exit 1
+exec "$project_dir/bin/restart-waste-profile" k3

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# DGX Spark Kimi K2 server using the qualified maximum-throughput profile.
+set -euo pipefail
+
+waste_repo=${WASTE_K2_REPO:-${WASTE_REPO:-}}
+model=${WASTE_K2_MODEL:-${WASTE_MODEL:-}}
+[[ -n $waste_repo ]] || {
+    echo "set WASTE_REPO or WASTE_K2_REPO to the warp-spark checkout" >&2
+    exit 2
+}
+[[ -n $model ]] || {
+    echo "set WASTE_MODEL or WASTE_K2_MODEL to the K2 .waste container" >&2
+    exit 2
+}
+cpu_list=${WASTE_K2_CPU_LIST:-${WASTE_CPU_LIST:-5-9,15-19}}
+budget=${WASTE_K2_BUDGET_BYTES:-${WASTE_BUDGET_BYTES:-84783939744}}
+status_path=${K2_QOS_STATUS:-${WASTE_QOS_STATUS:-/var/lib/waste-qos/k2-fast-status.json}}
+pid_path=${WASTE_SERVER_PID:-${K3_SERVER_PID:-/tmp/k3-minimal-fast-server.pid}}
+
+if [[ $(uname -s) != Linux ]]; then
+    echo "start-waste-k2-fast must run on the Spark" >&2
+    exit 2
+fi
+printf '%s\n' "$$" >"$pid_path"
+for required in "$waste_repo/libwaste.so" "$waste_repo/tools/pm_qos_exec.py"; do
+    [[ -f $required ]] || { echo "missing $required" >&2; exit 2; }
+done
+[[ -d $model ]] || { echo "missing $model" >&2; exit 2; }
+sudo -n true || { echo "passwordless sudo is required for Q0" >&2; exit 2; }
+
+engine_environment=(
+    WASTE_PROFILE=0
+    WASTE_Q8=1
+    WASTE_SDOT=0
+    WASTE_I8MM=0
+    WASTE_VERIFY=0
+    WASTE_BACKEND=auto
+    WASTE_DIRECT=1
+    WASTE_THREADS=8
+    WASTE_MLOCK=0
+    WASTE_PURGEABLE=0
+    WASTE_IO_THREADS=2
+    WASTE_IO_DEPTH=2
+    WASTE_LOOKAHEAD=6
+    WASTE_CUDA_KDA=1
+    WASTE_CUDA_DENSE=3
+    WASTE_CUDA_VQ=2
+    WASTE_CUDA_VQ_GROUP=1
+    WASTE_XPAR=0
+)
+
+echo "Starting K2 max profile: CUDA, Q0, 8 compute threads, readers 2/depth 2, lookahead 6"
+echo "Q0 evidence: $status_path"
+exec sudo -n python3 "$waste_repo/tools/pm_qos_exec.py" \
+    --scope child \
+    --latency-us 0 \
+    --status "$status_path" \
+    --user "$(id -un)" -- \
+    env "${engine_environment[@]}" \
+    python3 "$waste_repo/serve/__main__.py" "$model" \
+        --host 127.0.0.1 \
+        --port 8000 \
+        --threads 8 \
+        --cpus "$cpu_list" \
+        --cache lfru \
+        --budget "$budget"

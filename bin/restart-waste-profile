@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Safely replace the managed WARP server with a named K3 or K2 profile.
+set -euo pipefail
+
+profile=${1:-}
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+pid_path=${WASTE_SERVER_PID:-${K3_SERVER_PID:-/tmp/k3-minimal-fast-server.pid}}
+base_url=${WASTE_BASE_URL:-http://127.0.0.1:8000}
+k3_status=${K3_QOS_STATUS:-${WASTE_QOS_STATUS:-/var/lib/waste-qos/k3-minimal-fast-status.json}}
+k2_status=${K2_QOS_STATUS:-${WASTE_QOS_STATUS:-/var/lib/waste-qos/k2-fast-status.json}}
+
+case "$profile" in
+    k3)
+        launcher=$project_dir/bin/start-waste-fast
+        log_path=${K3_SERVER_LOG:-/tmp/k3-minimal-fast-server.log}
+        ;;
+    k2)
+        launcher=$project_dir/bin/start-waste-k2-fast
+        log_path=${K2_SERVER_LOG:-/tmp/k2-fast-server.log}
+        ;;
+    *)
+        echo "usage: $(basename -- "$0") {k3|k2}" >&2
+        exit 2
+        ;;
+esac
+
+if [[ -f $pid_path ]]; then
+    old_pid=$(tr -d '[:space:]' <"$pid_path")
+    if [[ $old_pid =~ ^[0-9]+$ ]] && sudo -n kill -0 "$old_pid" 2>/dev/null; then
+        cmdline=$(sudo -n tr '\0' ' ' <"/proc/$old_pid/cmdline")
+        if [[ $cmdline != *pm_qos_exec.py* ]]; then
+            echo "refusing to stop unrecognized PID $old_pid" >&2
+            exit 2
+        fi
+        if [[ $cmdline != *"$k3_status"* && $cmdline != *"$k2_status"* ]]; then
+            echo "refusing to stop unrecognized managed profile at PID $old_pid" >&2
+            exit 2
+        fi
+        echo "Stopping managed WARP supervisor PID $old_pid"
+        sudo -n kill -TERM "$old_pid"
+        for _ in $(seq 1 60); do
+            if ! sudo -n kill -0 "$old_pid" 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        if sudo -n kill -0 "$old_pid" 2>/dev/null; then
+            echo "managed WARP supervisor did not stop cleanly" >&2
+            exit 1
+        fi
+    fi
+fi
+
+for _ in $(seq 1 30); do
+    if ! curl --fail --silent --max-time 2 "$base_url/health" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+if curl --fail --silent --max-time 2 "$base_url/health" >/dev/null 2>&1; then
+    echo "port is serving WARP without a recognized managed supervisor; refusing" >&2
+    exit 2
+fi
+
+echo "Starting $profile profile"
+: >"$pid_path"
+setsid -f "$launcher" </dev/null >"$log_path" 2>&1
+
+for _ in $(seq 1 600); do
+    if curl --fail --silent --max-time 2 "$base_url/health" >/dev/null 2>&1; then
+        new_pid=$(tr -d '[:space:]' <"$pid_path")
+        [[ $new_pid =~ ^[0-9]+$ ]] || {
+            echo "server is healthy but its managed PID is missing" >&2
+            exit 1
+        }
+        "$project_dir/bin/check-waste" "$profile"
+        echo "WARP $profile profile ready (supervisor PID $new_pid)"
+        exit 0
+    fi
+    new_pid=$(tr -d '[:space:]' <"$pid_path")
+    if [[ $new_pid =~ ^[0-9]+$ ]] &&
+            ! sudo -n kill -0 "$new_pid" 2>/dev/null; then
+        echo "WARP $profile server exited during startup" >&2
+        tail -50 "$log_path" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+echo "WARP $profile server did not become ready within 600 seconds" >&2
+tail -50 "$log_path" >&2
+exit 1
